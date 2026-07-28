@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import fuels, inventory, dispense, auth, sales, analytics, expenses, oils
+from routers import fuels, inventory, dispense, auth, sales, analytics, expenses, oils
 from db.database import create_db_and_tables
 from pathlib import Path
 

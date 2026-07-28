@@ -9,7 +9,7 @@ from models.schemas import (
     UnifiedLowStockItem,
     UnifiedLowStockResponse
 )
-from ..services.ai_feature import get_ai_reorder_insights
+from services.ai_feature import get_ai_reorder_insights
 from statistics import mean, stdev
 from collections import defaultdict
 from datetime import datetime, date, timedelta
