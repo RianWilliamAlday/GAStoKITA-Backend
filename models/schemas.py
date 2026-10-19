@@ -1,5 +1,4 @@
-
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Dict
 from datetime import datetime, date
 from enum import Enum
@@ -7,6 +6,19 @@ from enum import Enum
 class ProductType(str, Enum):
     FUEL = "fuel"
     OIL = "oil"
+    ALL = "all"
+    MULTI = "multi"
+
+class FuelBatchResponse(BaseModel):
+    id: int
+    fuel_id: int
+    liters_initial: float
+    liters_remaining: float
+    cost_per_liter: float
+    selling_price: float
+    supplier: Optional[str] = None
+    restocked_by: Optional[str] = None
+    restocked_at: datetime
 
 class FuelTypeResponse(BaseModel):
     id: int
@@ -19,6 +31,11 @@ class FuelTypeResponse(BaseModel):
     display_percentage: float
     threshold: float
     needs_restock: bool
+    fifo_price: Optional[float] = None
+    oldest_batch_price: Optional[float] = None
+    newest_batch_price: Optional[float] = None
+    active_batches: Optional[int] = None
+    batches: List[FuelBatchResponse] = []
 
 class Pump(BaseModel):
     id: int
@@ -37,15 +54,24 @@ class RestockRequest(BaseModel):
     liters_added: float
     cost: float
     supplier: Optional[str] = None
+    selling_price: float
 
 class ThresholdUpdate(BaseModel):
     threshold: float
+
+class FifoSaleDetail(BaseModel):
+    batch_id: int
+    liters_consumed: float
+    price_per_liter: float
+    total_amount: float
+    restocked_at: Optional[datetime] = None
 
 class SaleCreate(BaseModel):
     pump_id: int
     liters_sold: float
     attendant_name: str
     payment_method: str = "cash"
+    amount_paid: float = 0
 
 class SaleResponse(BaseModel):
     id: int
@@ -57,8 +83,16 @@ class SaleResponse(BaseModel):
     liters_sold: float
     price_per_liter: float
     total_amount: float
+    amount_paid: float
+    change_given: float
+    receipt_no: str
     payment_method: str
     sold_at: datetime
+    fifo_breakdown: Optional[List[FifoSaleDetail]] = None
+    is_split_price: bool = False
+    payment_status: Optional[str] = None
+    checkout_url: Optional[str] = None
+    checkout_id: Optional[str] = None
 
 class AttendantSalesSummary(BaseModel):
     attendant_name: str
@@ -76,10 +110,14 @@ class SaleHistoryItem(BaseModel):
     liters_sold: float
     price_per_liter: float
     total_amount: float
+    amount_paid: float
+    change_given: float
+    receipt_no: Optional[str] = None
     payment_method: str
     recorded_by: str
     fuel_name: Optional[str] = None
     pump_name: Optional[str] = None
+    fifo_breakdown: Optional[List[FifoSaleDetail]] = None
 
 class SalesHistoryResponse(BaseModel):
     sales: List[SaleHistoryItem]
@@ -104,6 +142,7 @@ class OilSaleCreate(BaseModel):
     quantity: int
     payment_method: str = "cash"
     attendant_name: Optional[str] = None
+    amount_paid: float = 0
 
 class OilSaleResponse(BaseModel):
     id: int
@@ -113,11 +152,17 @@ class OilSaleResponse(BaseModel):
     quantity: int
     price_per_unit: float
     total_amount: float
+    amount_paid: float
+    change_given: float
+    receipt_no: str
     payment_method: str
     attendant_name: str
     sold_at: datetime
     recorded_by: str
     remaining_stock: int
+    payment_status: Optional[str] = None
+    checkout_url: Optional[str] = None
+    checkout_id: Optional[str] = None
 
 class OilSaleHistoryItem(BaseModel):
     id: int
@@ -127,6 +172,9 @@ class OilSaleHistoryItem(BaseModel):
     quantity: int
     price_per_unit: float
     total_amount: float
+    amount_paid: float
+    change_given: float
+    receipt_no: Optional[str] = None
     payment_method: str
     attendant_name: Optional[str] = None
     sold_at: datetime
@@ -145,9 +193,12 @@ class UnifiedSaleItem(BaseModel):
     product_type: ProductType
     product_name: str
     quantity: float
-    unit: Literal["L", "pcs"]
+    unit: Literal["L", "pcs", "items"]
     price_per_unit: float
     total_amount: float
+    amount_paid: float
+    change_given: float
+    receipt_no: Optional[str] = None
     payment_method: str
     attendant_name: str
     sold_at: datetime
@@ -164,6 +215,8 @@ class UnifiedHistoryResponse(BaseModel):
     total_amount: float
     total_liters: float
     total_oil_pcs: int
+    total_fuel_count: int = 0
+    total_oil_count: int = 0
     page: int
     page_size: int
 
@@ -249,9 +302,65 @@ class UnifiedLowStockItem(BaseModel):
     days_remaining: Optional[float] = None
     fuel_id: Optional[int] = None
     oil_id: Optional[int] = None
+    current_fifo_price: Optional[float] = None
 
 class UnifiedLowStockResponse(BaseModel):
     total_count: int
     fuel_count: int
     oil_count: int
     items: List[UnifiedLowStockItem]
+
+class UnifiedExpenseItem(BaseModel):
+    id: int
+    source_type: Literal["operational", "fuel_restock", "oil_restock"]
+    category: str
+    description: str
+    amount: float
+    expense_date: datetime
+    recorded_by: Optional[str] = None
+    supplier: Optional[str] = None
+
+class MultiFuelItem(BaseModel):
+    pump_id: int
+    liters_sold: float = Field(..., gt=0)
+
+class MultiOilItem(BaseModel):
+    oil_id: int
+    quantity: int = Field(..., gt=0)
+
+class MultiSaleCreate(BaseModel):
+    attendant_name: str
+    payment_method: str = Field(..., description="cash or gcash")
+    amount_paid: float = Field(0.0, ge=0)
+    fuel_items: List[MultiFuelItem] = []
+    oil_items: List[MultiOilItem] = []
+
+class MultiSaleResponse(BaseModel):
+    transaction_ref: str
+    attendant_name: str
+    payment_method: str
+    payment_status: str
+    total_amount: float
+    amount_paid: float
+    change_given: float
+    sold_at: datetime
+    fuel_sales: List[SaleResponse] = []
+    oil_sales: List[OilSaleResponse] = []
+    checkout_url: Optional[str] = None
+    checkout_id: Optional[str] = None
+
+class FuelLitersBreakdown(BaseModel):
+    fuel_id: int
+    fuel_name: str
+    liters_sold: float
+    revenue: float
+    transaction_count: int
+
+class DailyLitersSummaryResponse(BaseModel):
+    date: str
+    period_start: datetime
+    period_end: datetime
+    total_liters_sold: float
+    total_revenue: float
+    total_transactions: int
+    fuel_breakdown: List[FuelLitersBreakdown]

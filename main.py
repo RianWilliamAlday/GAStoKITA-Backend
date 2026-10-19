@@ -1,8 +1,9 @@
+import os
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from routers import fuels, inventory, dispense, auth, sales, analytics, expenses, oils
+from routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
 from db.database import create_db_and_tables
 from pathlib import Path
 
@@ -18,19 +19,31 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+HTML = os.path.join(os.path.dirname(__file__), "static")
+
+@app.get("/payment/success", response_class=FileResponse)
+def payment_success():
+    return FileResponse(os.path.join(HTML, "success.html"))
+
+@app.get("/payment/failed", response_class=FileResponse)
+def payment_failed():
+    return FileResponse(os.path.join(HTML, "failed.html"))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(fuels.router)
 app.include_router(inventory.router)
-app.include_router(dispense.router)
+app.include_router(receipt.router)
 app.include_router(auth.router)
 app.include_router(sales.router)
 app.include_router(analytics.router)
 app.include_router(expenses.router)
 app.include_router(oils.router)
+app.include_router(employees.router)
+app.include_router(gcash.router)

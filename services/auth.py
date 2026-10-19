@@ -9,7 +9,7 @@ import os
 
 SECRET_KEY = os.getenv("JWT_SECRET", "BACKUP_SECRET_KEY")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 
 oauth2_scheme = HTTPBearer()
 
@@ -53,6 +53,6 @@ def get_current_user(
     return user
 
 def require_admin(user: User = Depends(get_current_user)):
-    if user.role!= UserRole.ADMIN:
+    if user.role != UserRole.ADMIN:
         raise HTTPException(403, "Admin access required")
     return user

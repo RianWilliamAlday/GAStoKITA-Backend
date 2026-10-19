@@ -3,134 +3,225 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-from escpos.printer import Win32Raw
 import io
-from ..db.database import get_session, Sale, OilSale
+from db.database import get_session, Sale, OilSale, Fuel, Pump, OilProduct
 
 router = APIRouter(prefix="/api/receipts", tags=["receipts"])
 
-def build_pdf_bytes(sale, sale_type):
+def build_pdf_bytes(
+    total_amount: float,
+    amount_paid: float,
+    change_given: float,
+    sale_type: str = "fuel",
+    items: list = None,
+    fuel_name: str = "Fuel",
+    pump_name: str = "",
+    oil_name: str = "Oil",
+    single_qty: float = 0.0,
+    single_price: float = 0.0,
+):
     buf = io.BytesIO()
-    w, h = 80*mm, 200*mm
-    c = canvas.Canvas(buf, pagesize=(w,h))
-    y = h - 10*mm
+    item_count = len(items) if items else 1
+    w = 80 * mm
+    h = max(180 * mm, (120 + item_count * 8) * mm)
+    c = canvas.Canvas(buf, pagesize=(w, h))
+    y = h - 10 * mm
+
     c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(w/2, y, "GASTOKITA")
-    y -= 7*mm
+    c.drawCentredString(w / 2, y, "GASTOKITA")
+    y -= 7 * mm
 
-    def get(obj, *keys, default=""):
-        for k in keys:
-            if isinstance(obj, dict):
-                if k in obj and obj[k] not in (None, ""):
-                    return obj[k]
-            elif hasattr(obj, k):
-                v = getattr(obj, k)
-                if v not in (None, ""):
-                    return v
-        return default
-    
     c.setFont("Helvetica", 8)
-    c.drawCentredString(w/2, y, "U-Fuel Receipt")
-    y -= 5*mm
-    c.drawCentredString(w/2, y, "------------------------------")
-    y -= 7*mm
+    c.drawCentredString(w / 2, y, "U-Fuel Receipt")
+    y -= 5 * mm
+    c.drawCentredString(w / 2, y, "------------------------------")
+    y -= 5 * mm
+
     c.setFont("Helvetica", 8)
 
-    if sale_type == "fuel":
-        fuel_name = get(sale, 'fuel_name', 'fuel_type', 'name', default='Fuel')
-        pump = get(sale, 'pump_id', 'pump_number', 'pump_name', default='')
-        pump_txt = f" {pump}" if pump else ""
-        liters = float(get(sale, 'liters_sold', 'liters', 'quantity', default=0))
-        price = float(get(sale, 'price_per_liter', 'price_per_unit', 'price', default=0))
-        line1 = f"{fuel_name}{pump_txt} {liters:.3f}L x P{price:.2f}"
+    if items:
+        for item in items:
+            c.drawString(5 * mm, y, str(item))
+            y -= 5 * mm
+    elif sale_type == "fuel":
+        clean_fuel = (
+            fuel_name.split()[0]
+            if fuel_name
+            else (pump_name.split()[0] if pump_name else "Fuel")
+        )
+        line1 = f"{clean_fuel} {single_qty:.3f}L x P{single_price:.2f}"
+        c.drawString(5 * mm, y, line1)
+        y -= 5 * mm
     else:
-        oil_name = get(sale, 'product_name', 'brand', default='Oil')
-        qty = get(sale, 'quantity', 'liters_sold', default=1)
-        price = float(get(sale, 'price_per_unit', 'price', default=0))
-        line1 = f"{oil_name} {qty} x P{price:.2f}"
+        line1 = f"{oil_name} {int(single_qty)} x P{single_price:.2f}"
+        c.drawString(5 * mm, y, line1)
+        y -= 5 * mm
 
-    c.drawString(5*mm, y, line1)
-    y -= 5*mm
-    c.drawString(5*mm, y, f"Due:  P{sale.total_amount:.2f}")
-    y -= 5*mm
-    c.drawString(5*mm, y, f"Paid: P{sale.amount_paid:.2f}")
-    y -= 8*mm
+    c.drawString(5 * mm, y, f"Due:  P{total_amount:.2f}")
+    y -= 5 * mm
+    c.drawString(5 * mm, y, f"Paid: P{amount_paid:.2f}")
+    y -= 8 * mm
+
     c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(w/2, y, f"P {sale.change_given:.2f}")
-    y -= 6*mm
+    c.drawCentredString(w / 2, y, f"P {change_given:.2f}")
+    y -= 6 * mm
+
     c.setFont("Helvetica-Bold", 9)
-    c.drawCentredString(w/2, y, "CHANGE")
-    y -= 8*mm
+    c.drawCentredString(w / 2, y, "CHANGE")
+    y -= 8 * mm
+
     c.setFont("Helvetica", 8)
-    c.drawCentredString(w/2, y, "Thank you!")
-    y -= 5*mm
-    c.drawCentredString(w/2, y, "------------------------------")
+    c.drawCentredString(w / 2, y, "Thank you!")
+    y -= 5 * mm
+    c.drawCentredString(w / 2, y, "------------------------------")
 
     c.showPage()
     c.save()
     buf.seek(0)
     return buf
 
-def check_printer(name="XP-58H"):
-    try:
-        import win32com.client
-        wmi = win32com.client.GetObject("winmgmts:")
-        for p in wmi.ExecQuery(f"Select * from Win32_Printer where Name='{name}'"):
-            print(f"WMI: WorkOffline={p.WorkOffline} Status={p.PrinterStatus} State={p.PrinterState}")
-            return not p.WorkOffline
-        return False
-    except Exception as e:
-        print(f"WMI check fail, will try to print anyway: {e}")
-        return True
 
 @router.get("/{sale_type}/{sale_id}/pdf")
-def get_receipt_pdf(sale_type: str, sale_id: int, session: Session = Depends(get_session)):
-    if sale_type == "fuel":
-        sale = session.get(Sale, sale_id)
+def get_receipt_pdf(
+    sale_type: str, sale_id: str, session: Session = Depends(get_session)
+):
+    if sale_type == "multi":
+        tx_ref = str(sale_id)
+
+        if sale_id.isdigit():
+            fuel_s = session.exec(
+                select(Sale).where(Sale.id == int(sale_id))
+            ).first()
+            oil_s = session.exec(
+                select(OilSale).where(OilSale.id == int(sale_id))
+            ).first()
+            if fuel_s and getattr(fuel_s, "transaction_ref", None):
+                tx_ref = fuel_s.transaction_ref
+            elif oil_s and getattr(oil_s, "transaction_ref", None):
+                tx_ref = oil_s.transaction_ref
+
+        fuel_sales = session.exec(
+            select(
+                Sale, Fuel.name.label("fuel_name"), Pump.name.label("pump_name")
+            )
+            .outerjoin(Fuel, Sale.fuel_id == Fuel.id)
+            .outerjoin(Pump, Sale.pump_id == Pump.id)
+            .where(Sale.transaction_ref == tx_ref)
+        ).all()
+
+        oil_sales = session.exec(
+            select(OilSale, OilProduct)
+            .outerjoin(OilProduct, OilSale.oil_product_id == OilProduct.id)
+            .where(OilSale.transaction_ref == tx_ref)
+        ).all()
+
+        if not fuel_sales and not oil_sales:
+            raise HTTPException(404, "Multi sale transaction not found")
+
+        items = []
+        total_due = 0.0
+        amount_paid = 0.0
+        change_given = 0.0
+
+        for s_obj, f_name, p_name in fuel_sales:
+            clean_fuel = (
+                f_name.split()[0]
+                if f_name
+                else (p_name.split()[0] if p_name else "Fuel")
+            )
+            liters = float(s_obj.liters_sold)
+            price = float(
+                getattr(s_obj, "price_per_liter", 0)
+                or (s_obj.total_amount / liters if liters > 0 else 0)
+            )
+            items.append(f"{clean_fuel} {liters:.3f}L x P{price:.2f}")
+
+            total_due += s_obj.total_amount
+            amount_paid = max(amount_paid, s_obj.amount_paid)
+            change_given = max(change_given, s_obj.change_given)
+
+        for o_obj, o_prod in oil_sales:
+            p_label = (
+                f"{o_prod.brand} {o_prod.name}".strip() if o_prod else "Oil"
+            )
+            qty = int(o_obj.quantity)
+            price = float(
+                getattr(o_obj, "price_per_unit", 0)
+                or (o_obj.total_amount / qty if qty > 0 else 0)
+            )
+            items.append(f"{p_label} {qty} x P{price:.2f}")
+
+            total_due += o_obj.total_amount
+            amount_paid = max(amount_paid, o_obj.amount_paid)
+            change_given = max(change_given, o_obj.change_given)
+
+        pdf = build_pdf_bytes(
+            total_amount=round(total_due, 2),
+            amount_paid=amount_paid,
+            change_given=change_given,
+            sale_type="multi",
+            items=items,
+        )
+
+    elif sale_type == "fuel":
+        sale_int_id = int(sale_id) if sale_id.isdigit() else 0
+        result = session.exec(
+            select(
+                Sale, Fuel.name.label("fuel_name"), Pump.name.label("pump_name")
+            )
+            .outerjoin(Fuel, Sale.fuel_id == Fuel.id)
+            .outerjoin(Pump, Sale.pump_id == Pump.id)
+            .where(Sale.id == sale_int_id)
+        ).first()
+
+        if not result:
+            raise HTTPException(404, "Fuel sale not found")
+
+        sale_obj, fuel_name, pump_name = result
+
+        pdf = build_pdf_bytes(
+            total_amount=sale_obj.total_amount,
+            amount_paid=sale_obj.amount_paid,
+            change_given=sale_obj.change_given,
+            sale_type="fuel",
+            fuel_name=fuel_name,
+            pump_name=pump_name,
+            single_qty=float(sale_obj.liters_sold),
+            single_price=float(sale_obj.price_per_liter),
+        )
+
     else:
-        sale = session.get(OilSale, sale_id)
-    if not sale:
-        raise HTTPException(404, "Sale not found")
-    pdf = build_pdf_bytes(sale, sale_type)
-    return StreamingResponse(pdf, media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename=receipt_{sale_type}_{sale_id}.pdf"})
+        sale_int_id = int(sale_id) if sale_id.isdigit() else 0
+        result = session.exec(
+            select(OilSale, OilProduct)
+            .outerjoin(OilProduct, OilSale.oil_product_id == OilProduct.id)
+            .where(OilSale.id == sale_int_id)
+        ).first()
 
-@router.post("/print")
-def print_receipt_direct(payload: dict):
-    """
-    payload = {
-      "label": "Diesel",
-      "details": "10L",
-      "total": 650.00,
-      "paid": 1000.00,
-      "change": 350.00
-    }
-    """
-    if not check_printer("XP-58H"):
-        raise HTTPException(status_code=500, detail="Printer offline / USB unplugged")
+        if not result:
+            raise HTTPException(404, "Oil sale not found")
 
-    try:
-        p = Win32Raw("XP-58H")
-        
-        p.set(align='center', bold=True, width=2, height=2)
-        p.text("GASTOKITA\n")
-        p.set(align='center', bold=False, width=1, height=1)
-        p.text("U-Fuel Receipt\n")
-        p.text("------------------------------\n")
-        p.set(align='left')
-        p.text(f"{payload.get('label','')} {payload.get('details','')}\n")
-        p.text(f"Due:  P{payload.get('total',0):.2f}\n")
-        p.text(f"Paid: P{payload.get('paid',0):.2f}\n")
-        p.set(align='center', bold=True, width=2, height=2)
-        p.text(f"\nP {payload.get('change',0):.2f}\n")
-        p.set(align='center', bold=True, width=1, height=1)
-        p.text("CHANGE\n\n")
-        p.set(align='center')
-        p.text("Thank you!\n")
-        p.text("------------------------------\n")
-        p.cut()
-        p.close()
-        
-        return {"status": "printed"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}, 500
+        sale_obj, oil_product = result
+        product_name = (
+            f"{oil_product.brand} {oil_product.name}".strip()
+            if oil_product
+            else "Oil"
+        )
+
+        pdf = build_pdf_bytes(
+            total_amount=sale_obj.total_amount,
+            amount_paid=sale_obj.amount_paid,
+            change_given=sale_obj.change_given,
+            sale_type="oil",
+            oil_name=product_name,
+            single_qty=float(sale_obj.quantity),
+            single_price=float(sale_obj.price_per_unit),
+        )
+
+    return StreamingResponse(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=receipt_{sale_type}_{sale_id}.pdf"
+        },
+    )

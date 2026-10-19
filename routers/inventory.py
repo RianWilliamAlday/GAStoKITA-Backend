@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
-from db.database import get_session, Fuel, Sale, OilProduct, OilSale
+from db.database import get_session, Fuel, Sale, OilProduct, OilSale, AICache
 from models.schemas import (
     InventoryMetrics,
     UnifiedInventoryMetrics,
@@ -18,6 +18,35 @@ from typing import List, Literal
 router = APIRouter(prefix="/api/ai-inventory", tags=["ai-inventory"])
 
 ProductType = Literal["fuel", "oil", "all"]
+
+def get_cached_or_fresh_ai_insight(item_data: dict, session: Session) -> dict:
+    today_str = date.today().isoformat()
+    product_type = item_data.get("product_type", "fuel")
+    product_id = item_data.get("product_id") or item_data.get("fuel_id") or item_data.get("oil_id")
+    
+    cache_key = f"{today_str}:{product_type}:{product_id}"
+
+    cached_entry = session.exec(
+        select(AICache).where(AICache.cache_key == cache_key)
+    ).first()
+
+    if cached_entry:
+        return cached_entry.response_json
+
+    ai_data = get_ai_reorder_insights(item_data)
+
+    if ai_data.get("is_fallback"):
+        return ai_data
+
+    new_cache = AICache(
+        cache_key=cache_key,
+        cache_date=date.today(),
+        response_json=ai_data
+    )
+    session.add(new_cache)
+    session.commit()
+
+    return ai_data
 
 def get_fuel_inventory_optimization(session: Session) -> List[InventoryMetrics]:
     LEAD_TIME_DAYS = 3
@@ -252,24 +281,24 @@ def get_ai_inventory_optimization(session: Session = Depends(get_session)):
     enhanced = []
     for metric in base_metrics:
         data = metric.model_dump()
+        unit = metric.unit or "units"
         if metric.urgency in ["critical", "warning", "overstocked"]:
-            ai_data = get_ai_reorder_insights(data)
+            ai_data = get_cached_or_fresh_ai_insight(data, session)
         else:
-            unit = metric.unit
             ai_data = {
                 "urgency_explanation": "Stock levels normal",
-                "demand_insight": f"Usage stable at {metric.avg_daily_usage}{unit}/day",
+                "demand_insight": f"Usage stable at {metric.avg_daily_usage} {unit}/day",
                 "purchase_recommendation": "No action needed",
                 "risk_factors": [],
                 "action_items": ["Monitor weekly"]
             }
         enhanced.append(AIUnifiedInventoryMetrics(
             **data,
-            ai_urgency_explanation=ai_data["urgency_explanation"],
-            ai_demand_insight=ai_data["demand_insight"],
-            ai_purchase_recommendation=ai_data["purchase_recommendation"],
-            ai_risk_factors=ai_data["risk_factors"],
-            ai_action_items=ai_data["action_items"]
+            ai_urgency_explanation=ai_data.get("urgency_explanation") or "Stock levels normal",
+            ai_demand_insight=ai_data.get("demand_insight") or "Usage normal",
+            ai_purchase_recommendation=ai_data.get("purchase_recommendation") or "No action needed",
+            ai_risk_factors=ai_data.get("risk_factors") or [],
+            ai_action_items=ai_data.get("action_items") or []
         ))
     return enhanced
 
@@ -289,7 +318,14 @@ def get_ai_fuel_inventory(session: Session = Depends(get_session)):
                 "risk_factors": [],
                 "action_items": ["Monitor weekly"]
             }
-        enhanced.append(AIInventoryMetrics(**d, ai_urgency_explanation=ai_data["urgency_explanation"], ai_demand_insight=ai_data["demand_insight"], ai_purchase_recommendation=ai_data["purchase_recommendation"], ai_risk_factors=ai_data["risk_factors"], ai_action_items=ai_data["action_items"]))
+        enhanced.append(AIInventoryMetrics(
+            **d,
+            ai_urgency_explanation=ai_data.get("urgency_explanation") or "Stock levels normal",
+            ai_demand_insight=ai_data.get("demand_insight") or "Usage normal",
+            ai_purchase_recommendation=ai_data.get("purchase_recommendation") or "No action needed",
+            ai_risk_factors=ai_data.get("risk_factors") or [],
+            ai_action_items=ai_data.get("action_items") or []
+        ))
     return enhanced
 
 @router.get("/ai-inventory-optimization/oil", response_model=List[AIUnifiedInventoryMetrics])
@@ -303,12 +339,19 @@ def get_ai_oil_inventory(session: Session = Depends(get_session)):
         else:
             ai_data = {
                 "urgency_explanation": "Stock levels normal",
-                "demand_insight": f"Usage stable at {metric.avg_daily_usage}pcs/day",
+                "demand_insight": f"Usage stable at {metric.avg_daily_usage} pcs/day",
                 "purchase_recommendation": "No action needed",
                 "risk_factors": [],
                 "action_items": ["Monitor weekly"]
             }
-        enhanced.append(AIUnifiedInventoryMetrics(**d, ai_urgency_explanation=ai_data["urgency_explanation"], ai_demand_insight=ai_data["demand_insight"], ai_purchase_recommendation=ai_data["purchase_recommendation"], ai_risk_factors=ai_data["risk_factors"], ai_action_items=ai_data["action_items"]))
+        enhanced.append(AIUnifiedInventoryMetrics(
+            **d,
+            ai_urgency_explanation=ai_data.get("urgency_explanation") or "Stock levels normal",
+            ai_demand_insight=ai_data.get("demand_insight") or "Usage normal",
+            ai_purchase_recommendation=ai_data.get("purchase_recommendation") or "No action needed",
+            ai_risk_factors=ai_data.get("risk_factors") or [],
+            ai_action_items=ai_data.get("action_items") or []
+        ))
     return enhanced
 
 @router.get("/low-stock", response_model=UnifiedLowStockResponse)

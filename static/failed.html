@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Failed - GAStoKITA</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #f4f7f6; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); max-width: 420px; width: 100%; text-align: center; padding: 32px 24px; }
+        .icon-circle { width: 72px; height: 72px; background-color: #fce8e6; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; }
+        .icon-circle svg { width: 40px; height: 40px; fill: #ea4335; }
+        h1 { font-size: 24px; color: #202124; margin-bottom: 8px; }
+        p { color: #5f6368; font-size: 14px; line-height: 1.5; margin-bottom: 16px; }
+        .instruction-text { font-size: 13px; color: #80868b; font-weight: 500; border-top: 1px solid #e8eaed; padding-top: 16px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon-circle">
+            <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </div>
+        <h1>Payment Cancelled or Failed</h1>
+        <p>The GCash checkout was not completed.</p>
+        <p class="instruction-text">Please close this tab and try generating a new checkout request in the application.</p>
+    </div>
+</body>
+</html>
