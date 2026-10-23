@@ -163,6 +163,7 @@ def get_cashier_history(
             select(OilSale, OilProduct.brand, OilProduct.name)
             .outerjoin(OilProduct, OilSale.oil_product_id == OilProduct.id)
             .where(OilSale.sold_by == user_id)
+            .where(OilSale.payment_status == "paid")
         )
         if start_date:
             oil_stmt = oil_stmt.where(OilSale.sold_at >= datetime.combine(start_date, time.min))

@@ -605,6 +605,7 @@ def get_unified_history(
             .outerjoin(Fuel, Sale.fuel_id == Fuel.id)
             .outerjoin(Pump, Sale.pump_id == Pump.id)
             .outerjoin(User, Sale.recorded_by == User.id)
+            .where(Sale.payment_status == "paid")
         )
         if start_date:
             fuel_stmt = fuel_stmt.where(Sale.sold_at >= datetime.combine(start_date, time.min))
@@ -631,6 +632,7 @@ def get_unified_history(
             select(OilSale, OilProduct.brand, OilProduct.name, User.name)
             .outerjoin(OilProduct, OilSale.oil_product_id == OilProduct.id)
             .outerjoin(User, OilSale.sold_by == User.id)
+            .where(OilSale.payment_status == "paid")
         )
         if start_date:
             oil_stmt = oil_stmt.where(OilSale.sold_at >= datetime.combine(start_date, time.min))
