@@ -6,10 +6,6 @@ from enum import Enum
 from dotenv import load_dotenv
 from sqlmodel import SQLModel, Field, create_engine, Session, select, Relationship, JSON
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(PROJECT_ROOT / ".env")
-load_dotenv(PROJECT_ROOT / "backend" / ".env")
-DATABASE_URL = os.getenv("DATABASE")
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
