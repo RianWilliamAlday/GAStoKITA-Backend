@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPIOffline
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from fastapi.responses import RedirectResponse, FileResponse
@@ -9,11 +9,11 @@ from db.database import create_db_and_tables
 from pathlib import Path
 
 @asynccontextmanager
-async def lifespan(app: FastAPIOffline):
+async def lifespan(app: FastAPI):
     create_db_and_tables()
     yield
 
-app = FastAPIOffline(
+app = FastAPI(
     title="Backend",
     description="API for gas station app",
     version="1.8.5",
