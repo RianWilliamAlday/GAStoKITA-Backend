@@ -1,15 +1,32 @@
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select, func
+from sqlalchemy import cast, String
 from datetime import datetime, date, time
 from typing import Optional, List
+from pydantic import BaseModel
 from db.database import get_session, Expense, RestockLog, OilRestockLog, Fuel, OilProduct, User
 from models.schemas import UnifiedExpenseItem
+from services.auth import get_current_user
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
+class ExpenseCreate(BaseModel):
+    category: str
+    amount: float
+    description: str = ""
+    expense_date: Optional[datetime] = None
+
 @router.post("/")
-def create_expense(category: str, amount: float, description: str = "", session: Session = Depends(get_session)):
-    exp = Expense(category=category, amount=amount, description=description, expense_date=datetime.now())
+def create_expense(data: ExpenseCreate, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    recorded_date = data.expense_date or datetime.now()
+    
+    exp = Expense(
+        category=data.category,
+        amount=data.amount,
+        description=data.description,
+        expense_date=recorded_date,
+        recorded_by=current_user.id
+    )
     session.add(exp)
     session.commit()
     session.refresh(exp)
@@ -41,13 +58,18 @@ def list_expenses(
             supplier=None
         ))
 
-    fuel_stmt = select(RestockLog, Fuel.name).outerjoin(Fuel, RestockLog.fuel_id == Fuel.id)
+    fuel_stmt = (select(RestockLog, Fuel.name, User.name)
+        .outerjoin(Fuel, RestockLog.fuel_id == Fuel.id)
+        .outerjoin(User, RestockLog.restocked_by == cast(User.id, String)))
     if start_date:
         fuel_stmt = fuel_stmt.where(RestockLog.restocked_at >= datetime.combine(start_date, time.min))
     if end_date:
         fuel_stmt = fuel_stmt.where(RestockLog.restocked_at <= datetime.combine(end_date, time.max))
 
-    for log, fuel_name in session.exec(fuel_stmt).all():
+    for log, fuel_name, user_name in session.exec(fuel_stmt).all():
+        # Fallback order: user table name -> raw string in restocked_by -> default "Admin"
+        display_recorder = user_name or (str(log.restocked_by) if log.restocked_by else "Admin")
+
         unified_list.append(UnifiedExpenseItem(
             id=log.id,
             source_type="fuel_restock",
@@ -55,7 +77,7 @@ def list_expenses(
             description=f"Restocked {log.liters_added}L of {fuel_name or 'Fuel'}",
             amount=log.cost,
             expense_date=log.restocked_at,
-            recorded_by=log.restocked_by or "Admin",
+            recorded_by=display_recorder,
             supplier=log.supplier or "N/A"
         ))
 

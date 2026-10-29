@@ -1,6 +1,6 @@
 from requests import session
 from sqlmodel import Session, select
-from database import User, UserRole, engine, Fuel, Pump
+from.database import User, UserRole, engine, Fuel, Pump
 from services.auth import hash_password
 import json, os
 
@@ -47,6 +47,6 @@ def seed_data():
         print("Created default admin with password: admin123")
 
 if __name__ == "__main__":
-    from database import create_db_and_tables
+    from.database import create_db_and_tables
     create_db_and_tables()
     seed_data()

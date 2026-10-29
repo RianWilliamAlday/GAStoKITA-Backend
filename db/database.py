@@ -78,7 +78,7 @@ class RestockLog(SQLModel, table=True):
     liters_added: float
     cost: float
     supplier: Optional[str] = None
-    restocked_by: str
+    restocked_by: Optional[int] = Field(default=None, foreign_key="user.id")
     restocked_at: datetime = Field(default_factory=datetime.now)
 
 class Sale(SQLModel, table=True):
@@ -101,6 +101,7 @@ class Sale(SQLModel, table=True):
     recorded_by_user: Optional[User] = Relationship()
     fuel: Optional[Fuel] = Relationship()
     transaction_ref: Optional[str] = Field(default=None, index=True)
+    gcash_amount: float = Field(default=0.0)
 
 class OilProduct(SQLModel, table=True):
     __tablename__ = "oil_product"
@@ -144,6 +145,7 @@ class OilSale(SQLModel, table=True):
     sold_by: Optional[int] = Field(default=None, foreign_key="user.id")
     attendant_name: Optional[str] = None
     transaction_ref: Optional[str] = Field(default=None, index=True)
+    gcash_amount: float = Field(default=0.0)
 
 class Expense(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -171,6 +173,16 @@ class AICache(SQLModel, table=True):
     cache_date: date = Field(index=True)
     response_json: dict = Field(default={}, sa_type=JSON)
     created_at: datetime = Field(default_factory=datetime.now)
+
+class Attendance(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    attendant_id: Optional[int] = Field(foreign_key="attendant.id")
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    clock_in: datetime
+    clock_out: Optional[datetime] = None
+    hours_worked: Optional[float] = None
+    notes: Optional[str] = None
+    date: date
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)

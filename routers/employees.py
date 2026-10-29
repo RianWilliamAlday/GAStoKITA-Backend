@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select, func
-from db.database import get_session, Attendant, User, Sale, OilSale, Fuel, Pump, OilProduct
+from sqlmodel import Session, select, func, col
+from db.database import get_session, Attendant, User, Sale, OilSale, Fuel, Pump, OilProduct, Attendance
 from datetime import datetime, date, time, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
@@ -17,6 +17,30 @@ class AttendantUpdate(BaseModel):
     employee_id: Optional[str] = None
     contact: Optional[str] = None
     is_active: Optional[bool] = None
+
+class ClockInRequest(BaseModel):
+    attendant_id: int
+    clock_in_time: Optional[datetime] = None  # Custom time input (e.g. "2026-10-20T08:00:00")
+    notes: Optional[str] = None
+
+class ClockOutRequest(BaseModel):
+    attendant_id: int
+    clock_out_time: Optional[datetime] = None  # Custom time input
+    notes: Optional[str] = None
+
+class UserClockInRequest(BaseModel):
+    user_id: int
+    notes: Optional[str] = None
+
+class UserClockOutRequest(BaseModel):
+    user_id: int
+    notes: Optional[str] = None
+
+class UserClockOutRequest(BaseModel):
+    user_id: int
+    attendance_id: Optional[int] = None        # close one specific record (admin clicking a row)
+    clock_out_time: Optional[datetime] = None  # custom time (admin dialog)
+    notes: Optional[str] = None
 
 @router.post("/attendants")
 def add_attendant(data: AttendantCreate, session: Session = Depends(get_session)):
@@ -96,6 +120,406 @@ def seed(session: Session = Depends(get_session)):
     session.commit()
     return {"message": "seeded"}
 
+@router.post("/attendance/clock-in")
+def clock_in(data: ClockInRequest, session: Session = Depends(get_session)):
+    """Clock in an attendant with an optional custom input time."""
+    attendant = session.get(Attendant, data.attendant_id)
+    if not attendant:
+        raise HTTPException(404, "Attendant not found")
+    if not attendant.is_active:
+        raise HTTPException(400, "Cannot clock in an inactive attendant")
+
+    # Use the inputtable clock-in time, or fallback to right now
+    effective_clock_in = data.clock_in_time or datetime.now()
+
+    try:
+        from db.database import Attendance
+        open_session = session.exec(
+            select(Attendance).where(
+                Attendance.attendant_id == data.attendant_id,
+                Attendance.clock_out == None
+            )
+        ).first()
+
+        if open_session:
+            raise HTTPException(
+                400, 
+                f"{attendant.name} is already clocked in since {open_session.clock_in.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+        att_record = Attendance(
+            attendant_id=attendant.id,
+            clock_in=effective_clock_in,
+            notes=data.notes,
+            date=effective_clock_in.date()
+        )
+        session.add(att_record)
+        session.commit()
+        session.refresh(att_record)
+
+        return {
+            "message": f"{attendant.name} clocked in successfully",
+            "attendance_id": att_record.id,
+            "attendant_name": attendant.name,
+            "clock_in": att_record.clock_in.isoformat()
+        }
+    except ImportError:
+        return {
+            "message": f"{attendant.name} clocked in successfully",
+            "attendant_id": attendant.id,
+            "attendant_name": attendant.name,
+            "clock_in": effective_clock_in.isoformat()
+        }
+
+@router.post("/attendance/clock-out")
+def clock_out(data: ClockOutRequest, session: Session = Depends(get_session)):
+    """Clock out an attendant with an optional custom input time."""
+    attendant = session.get(Attendant, data.attendant_id)
+    if not attendant:
+        raise HTTPException(404, "Attendant not found")
+
+    effective_clock_out = data.clock_out_time or datetime.now()
+
+    try:
+        from db.database import Attendance
+        open_session = session.exec(
+            select(Attendance).where(
+                Attendance.attendant_id == data.attendant_id,
+                Attendance.clock_out == None
+            )
+        ).first()
+
+        if not open_session:
+            raise HTTPException(400, f"{attendant.name} is not currently clocked in")
+
+        if effective_clock_out < open_session.clock_in:
+            raise HTTPException(400, "Clock-out time cannot be earlier than clock-in time")
+
+        open_session.clock_out = effective_clock_out
+        duration_seconds = (effective_clock_out - open_session.clock_in).total_seconds()
+        open_session.hours_worked = round(duration_seconds / 3600.0, 2)
+
+        if data.notes:
+            open_session.notes = (open_session.notes or "") + f" | Out Note: {data.notes}"
+
+        session.add(open_session)
+        session.commit()
+        session.refresh(open_session)
+
+        return {
+            "message": f"{attendant.name} clocked out successfully",
+            "attendance_id": open_session.id,
+            "clock_in": open_session.clock_in.isoformat(),
+            "clock_out": open_session.clock_out.isoformat(),
+            "hours_worked": open_session.hours_worked
+        }
+    except ImportError:
+        return {
+            "message": f"{attendant.name} clocked out successfully",
+            "attendant_id": attendant.id,
+            "attendant_name": attendant.name,
+            "clock_out": effective_clock_out.isoformat()
+        }
+
+@router.get("/attendance/logs")
+def get_attendance_logs(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    attendant_id: Optional[int] = Query(None),
+    session: Session = Depends(get_session)
+):
+    """Retrieve historical attendance logs ONLY for Pump Attendants."""
+    from db.database import Attendance
+    # Strictly filter for pump attendants only
+    stmt = (
+        select(Attendance, Attendant.name)
+        .outerjoin(Attendant, Attendance.attendant_id == Attendant.id)
+        .where(Attendance.attendant_id != None)
+    )
+    
+    if start_date:
+        stmt = stmt.where(Attendance.clock_in >= datetime.combine(start_date, time.min))
+    if end_date:
+        stmt = stmt.where(Attendance.clock_in <= datetime.combine(end_date, time.max))
+    if attendant_id:
+        stmt = stmt.where(Attendance.attendant_id == attendant_id)
+
+    rows = session.exec(stmt.order_by(Attendance.clock_in.desc())).all()
+    logs = []
+    for att, att_name in rows:
+        logs.append({
+            "id": att.id,
+            "attendant_id": att.attendant_id,
+            "attendant_name": att_name or "Unknown Attendant",
+            "clock_in": att.clock_in.isoformat() if att.clock_in else None,
+            "clock_out": att.clock_out.isoformat() if att.clock_out else None,
+            "hours_worked": att.hours_worked or 0.0,
+            "notes": att.notes,
+            "is_active_shift": att.clock_out is None
+        })
+    return logs
+
+@router.get("/attendance/summary")
+def get_daily_attendance_summary(
+    target_date: Optional[date] = Query(None, description="Single day. Omit for all time"),
+    start_date: Optional[date] = Query(None, description="Start of range (inclusive)"),
+    end_date: Optional[date] = Query(None, description="End of range (inclusive)"),
+    session: Session = Depends(get_session)
+):
+    """Attendance summary strictly for Pump Attendants. No date params = all recorded shifts."""
+    try:
+        from db.database import Attendance
+        stmt = select(Attendance, Attendant.name).outerjoin(
+            Attendant, Attendance.attendant_id == Attendant.id
+        ).where(
+            Attendance.attendant_id != None  # Strictly filter for pump attendants
+        )
+
+        if target_date:
+            stmt = stmt.where(
+                Attendance.clock_in >= datetime.combine(target_date, time.min),
+                Attendance.clock_in <= datetime.combine(target_date, time.max)
+            )
+        if start_date:
+            stmt = stmt.where(Attendance.clock_in >= datetime.combine(start_date, time.min))
+        if end_date:
+            stmt = stmt.where(Attendance.clock_in <= datetime.combine(end_date, time.max))
+
+        records = session.exec(stmt.order_by(Attendance.clock_in.desc())).all()
+        currently_clocked_in = []
+        completed_shifts = []
+        total_hours = 0.0
+
+        for att, name in records:
+            item = {
+                "id": att.id,
+                "attendant_id": att.attendant_id,
+                "attendant_name": name or "Unknown",
+                "date": att.clock_in.date().isoformat() if att.clock_in else None,
+                "clock_in": att.clock_in.strftime("%H:%M:%S") if att.clock_in else None,
+                "clock_out": att.clock_out.strftime("%H:%M:%S") if att.clock_out else None,
+                "hours_worked": att.hours_worked or 0.0
+            }
+            if att.clock_out is None:
+                currently_clocked_in.append(item)
+            else:
+                completed_shifts.append(item)
+                total_hours += att.hours_worked or 0.0
+
+        return {
+            "date": target_date.isoformat() if target_date else None,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": end_date.isoformat() if end_date else None,
+            "total_present": len(records),
+            "currently_active_count": len(currently_clocked_in),
+            "total_hours_logged": round(total_hours, 2),
+            "active_attendants": currently_clocked_in,
+            "completed_shifts": completed_shifts
+        }
+    except ImportError:
+        return {
+            "date": target_date.isoformat() if target_date else None,
+            "start_date": None,
+            "end_date": None,
+            "total_present": 0,
+            "currently_active_count": 0,
+            "total_hours_logged": 0.0,
+            "active_attendants": [],
+            "completed_shifts": []
+        }
+
+@router.post("/user-attendance/login-clock-in")
+def user_login_clock_in(
+    req: UserClockInRequest,
+    session: Session = Depends(get_session)
+):
+    user = session.get(User, req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    today_date = date.today()
+    existing = session.exec(
+        select(Attendance).where(
+            Attendance.user_id == req.user_id,
+            Attendance.attendant_id.is_(None),   # <-- only the user's own login record
+            Attendance.clock_out.is_(None),
+            Attendance.date == today_date
+        )
+    ).first()
+
+    if existing:
+        return {"message": f"{user.name} is already clocked in.", "attendance_id": existing.id}
+
+    new_attendance = Attendance(
+        user_id=user.id,
+        attendant_id=None,
+        clock_in=datetime.now(),
+        date=today_date,
+        notes=req.notes
+    )
+    session.add(new_attendance)
+    session.commit()
+    session.refresh(new_attendance)
+
+    return {"message": f"Successfully clocked in {user.name}", "attendance_id": new_attendance.id}
+
+@router.post("/user-attendance/clock-out")
+def user_clock_out(req: UserClockOutRequest, session: Session = Depends(get_session)):
+    user = session.get(User, req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    stmt = select(Attendance).where(
+        Attendance.user_id == req.user_id,
+        Attendance.attendant_id.is_(None),
+        Attendance.clock_out.is_(None),
+    )
+    if req.attendance_id:
+        stmt = stmt.where(Attendance.id == req.attendance_id)
+    open_session = session.exec(stmt.order_by(Attendance.clock_in.desc())).first()
+
+    if not open_session:
+        return {"message": f"{user.name} is not currently clocked in.", "clocked_out": False}
+
+    effective_clock_out = req.clock_out_time or datetime.now()
+    if effective_clock_out < open_session.clock_in:
+        raise HTTPException(status_code=400, detail="Clock-out time cannot be earlier than clock-in time")
+
+    # Automatic clock-outs skip forgotten shifts so they don't get a huge bogus duration;
+    # an admin closes those from the attendance page instead.
+    if not req.attendance_id and not req.clock_out_time \
+            and effective_clock_out - open_session.clock_in > timedelta(hours=24):
+        return {"message": f"{user.name} has an open shift older than 24 hours. Ask an admin to close it.",
+                "clocked_out": False}
+
+    open_session.clock_out = effective_clock_out
+    open_session.hours_worked = round((effective_clock_out - open_session.clock_in).total_seconds() / 3600.0, 2)
+    if req.notes:
+        open_session.notes = f"{open_session.notes} | Out Note: {req.notes}" if open_session.notes else f"Out Note: {req.notes}"
+
+    session.add(open_session)
+    session.commit()
+    session.refresh(open_session)
+
+    return {
+        "message": f"{user.name} clocked out successfully",
+        "clocked_out": True,
+        "attendance_id": open_session.id,
+        "clock_in": open_session.clock_in.isoformat(),
+        "clock_out": open_session.clock_out.isoformat(),
+        "hours_worked": open_session.hours_worked,
+    }
+
+@router.get("/admin/attendance/overview")
+def get_admin_attendance_overview(
+    target_date: Optional[date] = Query(None, description="Single day. Omit for all time"),
+    date_from: Optional[date] = Query(None, description="Start of range (inclusive)"),
+    date_to: Optional[date] = Query(None, description="End of range (inclusive)"),
+    session: Session = Depends(get_session)
+):
+    # Build optional date filters (none given = all recorded shifts)
+    date_filters = []
+    if target_date:
+        date_filters.append(Attendance.date == target_date)
+    if date_from:
+        date_filters.append(Attendance.date >= date_from)
+    if date_to:
+        date_filters.append(Attendance.date <= date_to)
+
+    # 1. Attendant attendance
+    att_stmt = (
+        select(Attendance, Attendant.name)
+        .outerjoin(Attendant, Attendance.attendant_id == Attendant.id)
+        .where(Attendance.attendant_id.is_not(None), *date_filters)
+        .order_by(Attendance.clock_in.desc())
+    )
+    att_records = session.exec(att_stmt).all()
+
+    attendant_logs = []
+    att_active_count = 0
+    att_total_hours = 0.0
+
+    for att, name in att_records:
+        is_active = att.clock_out is None
+        if is_active:
+            att_active_count += 1
+        else:
+            att_total_hours += att.hours_worked or 0.0
+
+        attendant_logs.append({
+            "id": att.id,
+            "attendant_id": att.attendant_id,
+            "user_id": att.user_id,
+            "type": "Attendant",
+            "name": name or "Unknown Attendant",
+            "date": att.date.isoformat() if att.date else None,
+            "clock_in": att.clock_in.isoformat() if att.clock_in else None,
+            "clock_out": att.clock_out.isoformat() if att.clock_out else None,
+            "hours_worked": att.hours_worked or 0.0,
+            "notes": att.notes,
+            "is_active": is_active
+        })
+
+    # 2. User / cashier login attendance
+    usr_stmt = (
+        select(Attendance, User.name, User.role)
+        .outerjoin(User, Attendance.user_id == User.id)
+        .where(
+            Attendance.user_id.is_not(None),
+            Attendance.attendant_id.is_(None),
+            *date_filters
+        )
+        .order_by(Attendance.clock_in.desc())
+    )
+    usr_records = session.exec(usr_stmt).all()
+
+    user_logs = []
+    usr_active_count = 0
+    usr_total_hours = 0.0
+
+    for att, name, role in usr_records:
+        is_active = att.clock_out is None
+        if is_active:
+            usr_active_count += 1
+        else:
+            usr_total_hours += att.hours_worked or 0.0
+
+        role_str = role.value if hasattr(role, "value") else str(role or "Cashier")
+
+        user_logs.append({
+            "id": att.id,
+            "attendant_id": att.attendant_id,
+            "user_id": att.user_id,
+            "type": f"User ({role_str})",
+            "name": name or "Unknown User",
+            "date": att.date.isoformat() if att.date else None,
+            "clock_in": att.clock_in.isoformat() if att.clock_in else None,
+            "clock_out": att.clock_out.isoformat() if att.clock_out else None,
+            "hours_worked": att.hours_worked or 0.0,
+            "notes": att.notes,
+            "is_active": is_active
+        })
+
+    return {
+        "date": target_date.isoformat() if target_date else None,
+        "date_from": date_from.isoformat() if date_from else None,
+        "date_to": date_to.isoformat() if date_to else None,
+        "summary": {
+            "total_attendants_active": att_active_count,
+            "total_users_active": usr_active_count,
+            "combined_active_now": att_active_count + usr_active_count,
+            "total_attendant_hours": round(att_total_hours, 2),
+            "total_user_hours": round(usr_total_hours, 2),
+        },
+        "attendant_logs": attendant_logs,
+        "user_logs": user_logs,
+        "combined_logs": sorted(
+            attendant_logs + user_logs,
+            key=lambda x: x["clock_in"] or "",
+            reverse=True
+        )
+    }
+
 @router.get("/")
 def list_cashiers(session: Session = Depends(get_session)):
     """List all user accounts that can be cashiers"""
@@ -138,6 +562,7 @@ def get_cashier_history(
             .outerjoin(Fuel, Sale.fuel_id == Fuel.id)
             .outerjoin(Pump, Sale.pump_id == Pump.id)
             .where(Sale.recorded_by == user_id)
+            .where(Sale.payment_status == "paid")
         )
         if start_date:
             fuel_stmt = fuel_stmt.where(Sale.sold_at >= datetime.combine(start_date, time.min))

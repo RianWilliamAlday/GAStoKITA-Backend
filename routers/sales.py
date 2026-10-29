@@ -49,6 +49,21 @@ def get_current_fifo_price(session: Session, fuel_id: int, fuel_fallback: Fuel =
         return batches[0].selling_price
     return fuel_fallback.price if fuel_fallback else 0.0
 
+def split_gcash_part(data, total: float) -> float:
+    """GCash portion of a split payment, 0.0 for every other payment method.
+
+    Split = part GCash (the shop's own QR, confirmed by hand by the attendant) + part cash.
+    For a split sale `data.amount_paid` is everything received (GCash part + cash handed over),
+    so the normal "paid >= total" check and the change calculation keep working unchanged.
+    """
+    if (data.payment_method or "").lower() != "split":
+        return 0.0
+    g = round(float(getattr(data, "gcash_amount", 0) or 0), 2)
+    if g <= 0 or g >= total - 0.01:
+        raise HTTPException(400, f"Split payment needs a GCash amount between 0 and the total (P{total:.2f}), got P{g:.2f}")
+    return g
+
+
 @router.post("/fuel", response_model=SaleResponse)
 def create_fuel_sale(
     data: SaleCreate,
@@ -156,6 +171,8 @@ def create_fuel_sale(
             session.rollback()
             raise HTTPException(500, f"PayMongo GCash failed: {str(e)}")
 
+    gcash_part = split_gcash_part(data, total_amount)
+
     if data.amount_paid < total_amount - 0.01:
         raise HTTPException(400, f"Amount paid P{data.amount_paid:.2f} is less than due P{total_amount:.2f}")
     change_given = round(data.amount_paid - total_amount, 2)
@@ -175,8 +192,9 @@ def create_fuel_sale(
         amount_paid=round(data.amount_paid, 2),
         change_given=change_given,
         receipt_no="TMP",
-        payment_method="cash",
-        payment_status="paid"
+        payment_method="split" if gcash_part else "cash",
+        payment_status="paid",
+        gcash_amount=gcash_part
     )
     session.add(sale)
     session.flush()
@@ -302,6 +320,8 @@ def create_oil_sale(
             session.rollback()
             raise HTTPException(500, f"PayMongo GCash failed: {str(e)}")
 
+    gcash_part = split_gcash_part(data, total)
+
     if data.amount_paid < total - 0.01:
         raise HTTPException(400, f"Amount paid P{data.amount_paid:.2f} is less than due P{total:.2f}")
 
@@ -317,8 +337,9 @@ def create_oil_sale(
         amount_paid=round(data.amount_paid, 2),
         change_given=change_given,
         receipt_no="TMP",
-        payment_method="cash",
+        payment_method="split" if gcash_part else "cash",
         payment_status="paid",
+        gcash_amount=gcash_part,
         attendant_name=attendant,
         sold_by=current_user.id
     )
@@ -433,6 +454,23 @@ def create_multi_sale(
     grand_total = round(total_fuel_amount + total_oil_amount, 2)
     is_gcash = data.payment_method.lower() == "gcash"
 
+    gcash_total = split_gcash_part(data, grand_total)
+    stored_pm = "split" if gcash_total else data.payment_method.lower()
+
+    # Spread the GCash part over the item rows in proportion to their price, so the
+    # per-row amounts add back up to exactly gcash_total (reports sum the rows).
+    n_rows = len(fuel_preparations) + len(oil_preparations)
+    gcash_shares = [0.0] * n_rows
+    if gcash_total and n_rows:
+        row_totals = [p["item_total"] for p in fuel_preparations] + [p["item_total"] for p in oil_preparations]
+        assigned = 0.0
+        for i, t in enumerate(row_totals):
+            if i == n_rows - 1:
+                gcash_shares[i] = round(gcash_total - assigned, 2)
+            else:
+                gcash_shares[i] = round(gcash_total * t / grand_total, 2)
+                assigned += gcash_shares[i]
+
     if not is_gcash and data.amount_paid < grand_total - 0.01:
         raise HTTPException(
             400, f"Amount paid ₱{data.amount_paid:.2f} is less than due ₱{grand_total:.2f}"
@@ -443,7 +481,7 @@ def create_multi_sale(
     fuel_responses = []
     oil_responses = []
 
-    for prep in fuel_preparations:
+    for fi, prep in enumerate(fuel_preparations):
         fuel = prep["fuel"]
         pump = prep["pump"]
 
@@ -464,8 +502,9 @@ def create_multi_sale(
             change_given=change_given,
             receipt_no=trx_ref,
             transaction_ref=trx_ref,
-            payment_method=data.payment_method.lower(),
-            payment_status="pending" if is_gcash else "paid"
+            payment_method=stored_pm,
+            payment_status="pending" if is_gcash else "paid",
+            gcash_amount=gcash_shares[fi]
         )
         session.add(sale)
         session.flush()
@@ -506,13 +545,13 @@ def create_multi_sale(
             amount_paid=paid_amount,
             change_given=change_given,
             receipt_no=trx_ref,
-            payment_method=data.payment_method.lower(),
+            payment_method=stored_pm,
             sold_at=sale.sold_at,
             fifo_breakdown=fifo_details,
             is_split_price=len(fifo_details) > 1
         ))
 
-    for prep in oil_preparations:
+    for oi, prep in enumerate(oil_preparations):
         oil = prep["oil"]
         if not is_gcash:
             oil.stock -= prep["quantity"]
@@ -527,8 +566,9 @@ def create_multi_sale(
             change_given=change_given,
             receipt_no=trx_ref,
             transaction_ref=trx_ref,
-            payment_method=data.payment_method.lower(),
+            payment_method=stored_pm,
             payment_status="pending" if is_gcash else "paid",
+            gcash_amount=gcash_shares[len(fuel_preparations) + oi],
             attendant_name=clean_name,
             sold_by=current_user.id
         )
@@ -546,7 +586,7 @@ def create_multi_sale(
             amount_paid=paid_amount,
             change_given=change_given,
             receipt_no=trx_ref,
-            payment_method=data.payment_method.lower(),
+            payment_method=stored_pm,
             attendant_name=clean_name,
             sold_at=sale.sold_at,
             recorded_by=current_user.name,
@@ -574,7 +614,7 @@ def create_multi_sale(
     return MultiSaleResponse(
         transaction_ref=trx_ref,
         attendant_name=clean_name,
-        payment_method=data.payment_method.lower(),
+        payment_method=stored_pm,
         payment_status="pending" if is_gcash else "paid",
         total_amount=grand_total,
         amount_paid=paid_amount,

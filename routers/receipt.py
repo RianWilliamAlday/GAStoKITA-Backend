@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
+from escpos.printer import Win32Raw
 import io
 from db.database import get_session, Sale, OilSale, Fuel, Pump, OilProduct
 

@@ -116,7 +116,7 @@ def get_fifo_price(fuel_id: int, session: Session = Depends(get_session)):
     }
 
 @router.post("/{fuel_id}/restock")
-def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(get_session)):
+def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
     """
     FIFO Restock: Creates a new batch at new selling_price.
     Current selling price stays at old batch price until old stock depleted.
@@ -130,7 +130,6 @@ def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(
     if data.selling_price <= 0:
         raise HTTPException(400, "Selling price must be positive")
     ensure_initial_batch(session, fuel)
-    current_user: User = Depends(get_current_user)
 
     cost_per_liter = data.cost / data.liters_added if data.liters_added > 0 else 0
 
@@ -150,7 +149,7 @@ def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(
     fuel.last_restocked = datetime.now()
     session.add(fuel)
 
-    log = RestockLog(fuel_id=fuel.id, liters_added=data.liters_added, cost=data.cost, supplier=data.supplier, restocked_by="admin")
+    log = RestockLog(fuel_id=fuel.id, liters_added=data.liters_added, cost=data.cost, supplier=data.supplier, restocked_by=current_user.id)
     session.add(log)
     session.commit()
     session.refresh(fuel)

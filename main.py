@@ -1,25 +1,30 @@
 import os
-from fastapi import FastAPI
+from fastapi_offline import FastAPIOffline
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
+from backend.routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
 from db.database import create_db_and_tables
 from pathlib import Path
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPIOffline):
     create_db_and_tables()
     yield
 
-app = FastAPI(
+app = FastAPIOffline(
     title="Backend",
     description="API for gas station app",
-    version="1.6.1",
+    version="1.8.5",
     lifespan=lifespan
 )
 
 HTML = os.path.join(os.path.dirname(__file__), "static")
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount("/static/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 @app.get("/payment/success", response_class=FileResponse)
 def payment_success():

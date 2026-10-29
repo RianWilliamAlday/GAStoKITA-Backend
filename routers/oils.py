@@ -86,7 +86,7 @@ def update_oil(oil_id: int, data: OilCreate, session: Session = Depends(get_sess
     return oil
 
 @router.post("/{oil_id}/restock")
-def restock_oil(oil_id: int, data: OilRestockRequest, session: Session = Depends(get_session)):
+def restock_oil(oil_id: int, data: OilRestockRequest, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
     oil = session.get(OilProduct, oil_id)
     if not oil:
         raise HTTPException(404, "Oil product not found")
@@ -107,7 +107,8 @@ def restock_oil(oil_id: int, data: OilRestockRequest, session: Session = Depends
         oil_product_id=oil.id,
         quantity_added=data.quantity_added,
         total_cost=data.total_cost,
-        supplier=data.supplier
+        supplier=data.supplier,
+        restocked_by=current_user.id
     )
     session.add(oil)
     session.add(log)
