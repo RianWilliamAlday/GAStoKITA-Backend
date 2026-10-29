@@ -1,5 +1,5 @@
 import os
-from fastapi_offline import FastAPIOffline
+from fastapi import FastAPIOffline
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from fastapi.responses import RedirectResponse, FileResponse
