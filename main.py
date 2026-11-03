@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
+from routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
 from db.database import create_db_and_tables
 from pathlib import Path
 

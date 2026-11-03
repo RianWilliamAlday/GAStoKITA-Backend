@@ -4,13 +4,9 @@ import sys
 import traceback
 from datetime import date
 from pathlib import Path
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-
-BACKEND_ENV = Path(__file__).resolve().parents[1] / ".env"
-load_dotenv(BACKEND_ENV)
 
 api_key = os.getenv("GOOGLE_API_KEY")
 
