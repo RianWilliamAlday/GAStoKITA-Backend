@@ -9,8 +9,8 @@ PAYMONGO_SECRET_KEY = os.getenv("PAYMONGO_SECRET_KEY")
 PAYMONGO_PUBLIC_KEY = os.getenv("PAYMONGO_PUBLIC_KEY")
 BASE_URL = "https://api.paymongo.com/v1"
 
-SUCCESS_URL = os.getenv("SUCCESS_URL", "https://gastokita-backend.onrender.com/payment/success")
-FAILED_URL = os.getenv("FAILED_URL", "https://gastokita-backend.onrender.com/payment/failed")
+SUCCESS_URL = os.getenv("SUCCESS_URL", "http://127.0.0.1:8000/payment/success")
+FAILED_URL = os.getenv("FAILED_URL", "http://127.0.0.1:8000/payment/failed")
 
 def _headers():
     if not PAYMONGO_SECRET_KEY:

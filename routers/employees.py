@@ -34,12 +34,13 @@ class UserClockInRequest(BaseModel):
 
 class UserClockOutRequest(BaseModel):
     user_id: int
+    attendance_id: Optional[int] = None        # close one specific record (admin clicking a row)
+    clock_out_time: Optional[datetime] = None  # custom time (admin dialog / cashier sidebar)
     notes: Optional[str] = None
 
-class UserClockOutRequest(BaseModel):
+class UserManualClockInRequest(BaseModel):
     user_id: int
-    attendance_id: Optional[int] = None        # close one specific record (admin clicking a row)
-    clock_out_time: Optional[datetime] = None  # custom time (admin dialog)
+    clock_in_time: Optional[datetime] = None   # custom time, e.g. "2026-11-02T06:45:00"; None = now
     notes: Optional[str] = None
 
 @router.post("/attendants")
@@ -363,6 +364,112 @@ def user_login_clock_in(
 
     return {"message": f"Successfully clocked in {user.name}", "attendance_id": new_attendance.id}
 
+@router.get("/user-attendance/status")
+def user_attendance_status(user_id: int = Query(...), session: Session = Depends(get_session)):
+    """Is this cashier/user currently clocked in? (most recent open shift of their own)"""
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    open_rec = session.exec(
+        select(Attendance).where(
+            Attendance.user_id == user_id,
+            Attendance.attendant_id.is_(None),
+            Attendance.clock_out.is_(None),
+        ).order_by(Attendance.clock_in.desc())
+    ).first()
+
+    if not open_rec:
+        return {"clocked_in": False, "attendance_id": None, "clock_in": None, "notes": None}
+
+    return {
+        "clocked_in": True,
+        "attendance_id": open_rec.id,
+        "clock_in": open_rec.clock_in.isoformat() if open_rec.clock_in else None,
+        "notes": open_rec.notes,
+    }
+
+@router.post("/user-attendance/clock-in")
+def user_manual_clock_in(req: UserManualClockInRequest, session: Session = Depends(get_session)):
+    """
+    Manual clock-in for a cashier/user with an optional custom time.
+    If they already have an open shift (e.g. the auto login clock-in at 7:20 AM),
+    that record's clock_in is REPLACED by the given time (e.g. 6:45 AM) instead of
+    creating a second record. Otherwise a new record is created.
+    """
+    user = session.get(User, req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now = datetime.now()
+    effective = req.clock_in_time or now
+    if effective.tzinfo is not None:
+        effective = effective.astimezone().replace(tzinfo=None)
+    if effective > now + timedelta(minutes=1):
+        raise HTTPException(status_code=400, detail="Clock-in time cannot be in the future")
+
+    own_records = (
+        Attendance.user_id == req.user_id,
+        Attendance.attendant_id.is_(None),
+    )
+
+    extra = f" | {req.notes}" if req.notes else ""
+    open_rec = session.exec(
+        select(Attendance).where(*own_records, Attendance.clock_out.is_(None))
+        .order_by(Attendance.clock_in.desc())
+    ).first()
+
+    # Don't let a clock-in overlap a shift that was already closed. Only finished shifts that
+    # started before the open one count; a closed record dated in the future is bad data and is ignored.
+    prior_filters = [*own_records, Attendance.clock_out.is_not(None), Attendance.clock_out <= now]
+    if open_rec and open_rec.clock_in:
+        prior_filters.append(Attendance.clock_in < open_rec.clock_in)
+    last_closed = session.exec(
+        select(Attendance).where(*prior_filters).order_by(Attendance.clock_out.desc())
+    ).first()
+    if last_closed and effective < last_closed.clock_out:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Clock-in cannot be earlier than your previous clock-out ({last_closed.clock_out.strftime('%b %d, %I:%M %p')})"
+        )
+
+    if open_rec:
+        previous = open_rec.clock_in
+        open_rec.clock_in = effective
+        open_rec.date = effective.date()
+        if previous and previous.replace(microsecond=0) != effective.replace(microsecond=0):
+            open_rec.notes = f"Manual clock-in (replaced {previous.strftime('%I:%M %p')} record){extra}"
+        else:
+            open_rec.notes = f"Manual clock-in{extra}"
+        session.add(open_rec)
+        session.commit()
+        session.refresh(open_rec)
+        return {
+            "message": f"Clock-in set to {effective.strftime('%I:%M %p')}",
+            "attendance_id": open_rec.id,
+            "clock_in": open_rec.clock_in.isoformat(),
+            "replaced": True,
+            "previous_clock_in": previous.isoformat() if previous else None,
+        }
+
+    new_rec = Attendance(
+        user_id=user.id,
+        attendant_id=None,
+        clock_in=effective,
+        date=effective.date(),
+        notes=f"Manual clock-in{extra}",
+    )
+    session.add(new_rec)
+    session.commit()
+    session.refresh(new_rec)
+    return {
+        "message": f"{user.name} clocked in at {effective.strftime('%I:%M %p')}",
+        "attendance_id": new_rec.id,
+        "clock_in": new_rec.clock_in.isoformat(),
+        "replaced": False,
+        "previous_clock_in": None,
+    }
+
 @router.post("/user-attendance/clock-out")
 def user_clock_out(req: UserClockOutRequest, session: Session = Depends(get_session)):
     user = session.get(User, req.user_id)
@@ -382,6 +489,10 @@ def user_clock_out(req: UserClockOutRequest, session: Session = Depends(get_sess
         return {"message": f"{user.name} is not currently clocked in.", "clocked_out": False}
 
     effective_clock_out = req.clock_out_time or datetime.now()
+    if effective_clock_out.tzinfo is not None:
+        effective_clock_out = effective_clock_out.astimezone().replace(tzinfo=None)
+    if effective_clock_out > datetime.now() + timedelta(minutes=1):
+        raise HTTPException(status_code=400, detail="Clock-out time cannot be in the future")
     if effective_clock_out < open_session.clock_in:
         raise HTTPException(status_code=400, detail="Clock-out time cannot be earlier than clock-in time")
 

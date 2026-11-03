@@ -99,6 +99,7 @@ class Sale(SQLModel, table=True):
     fuel: Optional[Fuel] = Relationship()
     transaction_ref: Optional[str] = Field(default=None, index=True)
     gcash_amount: float = Field(default=0.0)
+    discount_amount: float = Field(default=0.0)
 
 class OilProduct(SQLModel, table=True):
     __tablename__ = "oil_product"
@@ -143,6 +144,7 @@ class OilSale(SQLModel, table=True):
     attendant_name: Optional[str] = None
     transaction_ref: Optional[str] = Field(default=None, index=True)
     gcash_amount: float = Field(default=0.0)
+    discount_amount: float = Field(default=0.0)
 
 class Expense(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

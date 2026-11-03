@@ -73,6 +73,8 @@ class SaleCreate(BaseModel):
     payment_method: str = "cash"
     amount_paid: float = 0
     gcash_amount: float = 0.0
+    discount_value: float = 0.0
+    discount_type: Optional[str] = None
 
 class SaleResponse(BaseModel):
     id: int
@@ -145,6 +147,8 @@ class OilSaleCreate(BaseModel):
     attendant_name: Optional[str] = None
     amount_paid: float = 0
     gcash_amount: float = 0.0
+    discount_value: float = 0.0
+    discount_type: Optional[str] = None
 
 class OilSaleResponse(BaseModel):
     id: int
@@ -337,6 +341,9 @@ class MultiSaleCreate(BaseModel):
     fuel_items: List[MultiFuelItem] = []
     oil_items: List[MultiOilItem] = []
     gcash_amount: float = 0.0
+    discount_value: float = 0.0
+    discount_value: float = 0.0
+    discount_type: Optional[str] = None
 
 class MultiSaleResponse(BaseModel):
     transaction_ref: str

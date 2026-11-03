@@ -1,4 +1,3 @@
-from urllib import request
 from services.auth import get_current_user, User
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
@@ -28,7 +27,6 @@ def get_current_fifo_price(session: Session, fuel_id: int) -> float:
 def ensure_initial_batch(session: Session, fuel: Fuel):
     """Create initial batch from existing stock if no batches exist (migration)"""
     existing = session.exec(select(FuelBatch).where(FuelBatch.fuel_id == fuel.id)).first()
-    current_user: User = Depends(get_current_user)
     if not existing and fuel.actual_liters > 0:
         batch = FuelBatch(
             fuel_id=fuel.id,
@@ -37,7 +35,7 @@ def ensure_initial_batch(session: Session, fuel: Fuel):
             cost_per_liter=fuel.price * 0.8,
             selling_price=fuel.price,
             supplier="Initial Stock",
-            restocked_by=current_user.id,
+            restocked_by="system",
             restocked_at=fuel.last_restocked or datetime.now()
         )
         session.add(batch)
@@ -121,6 +119,10 @@ def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(
     FIFO Restock: Creates a new batch at new selling_price.
     Current selling price stays at old batch price until old stock depleted.
     Example: 4kL at 60 remaining, restock 4kL at 75 -> price stays 60 until first 4kL sold.
+
+    NOTE: `data.cost` is the BASE COST PER LITER (not the total).
+    The system computes: total_cost = cost_per_liter * liters_added.
+    The total is what gets stored in RestockLog.cost (used by expenses).
     """
     fuel = session.get(Fuel, fuel_id)
     if not fuel: raise HTTPException(404, "Fuel type not found")
@@ -129,9 +131,12 @@ def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(
         raise HTTPException(400, f"Exceeds tank capacity. Only {fuel.tank_capacity - fuel.actual_liters:.2f}L space left")
     if data.selling_price <= 0:
         raise HTTPException(400, "Selling price must be positive")
+    if data.cost < 0:
+        raise HTTPException(400, "Cost per liter cannot be negative")
     ensure_initial_batch(session, fuel)
 
-    cost_per_liter = data.cost / data.liters_added if data.liters_added > 0 else 0
+    cost_per_liter = data.cost
+    total_cost = round(cost_per_liter * data.liters_added, 2)
 
     batch = FuelBatch(
         fuel_id=fuel.id,
@@ -149,7 +154,8 @@ def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(
     fuel.last_restocked = datetime.now()
     session.add(fuel)
 
-    log = RestockLog(fuel_id=fuel.id, liters_added=data.liters_added, cost=data.cost, supplier=data.supplier, restocked_by=current_user.id)
+    # Expense log stores the TOTAL expenditure
+    log = RestockLog(fuel_id=fuel.id, liters_added=data.liters_added, cost=total_cost, supplier=data.supplier, restocked_by=current_user.id)
     session.add(log)
     session.commit()
     session.refresh(fuel)
@@ -167,6 +173,8 @@ def restock_fuel(fuel_id: int, data: RestockRequest, session: Session = Depends(
         "message": f"Restocked {data.liters_added}L of {fuel.name} at ₱{data.selling_price}/L (FIFO)",
         "fuel_id": fuel.id,
         "new_batch": {"id": batch.id, "liters": batch.liters_initial, "selling_price": batch.selling_price, "cost_per_liter": batch.cost_per_liter},
+        "cost_per_liter": cost_per_liter,
+        "total_cost": total_cost,
         "current_fifo_price": current_fifo_price,
         "old_price_still_active": current_fifo_price != data.selling_price,
         "explanation": f"Old stock at ₱{current_fifo_price}/L will sell first. New batch at ₱{data.selling_price}/L queued." if current_fifo_price != data.selling_price else f"New price ₱{data.selling_price}/L is now active (no old stock).",
@@ -212,6 +220,7 @@ def update_price(fuel_id: int, data: PriceUpdate, session: Session = Depends(get
 @router.post("/{fuel_id}/sync-dipstick")
 def sync_from_dipstick(fuel_id: int, cm: int = Query(..., ge=0), session: Session = Depends(get_session)):
     fuel = session.get(Fuel, fuel_id)
+    if not fuel: raise HTTPException(404, "Fuel not found")
     if cm not in DIPSTICK_DATA: raise HTTPException(400, "Invalid reading")
     new_l = DIPSTICK_DATA[cm]; old_l = fuel.actual_liters
     diff = new_l - old_l

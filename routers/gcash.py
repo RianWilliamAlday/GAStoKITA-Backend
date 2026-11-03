@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from db.database import get_session, Sale, Fuel, Pump, FuelBatch, FuelSaleBatch, OilProduct, OilSale, Attendant, User
 from services.gcashService import create_gcash_checkout, retrieve_checkout
 from services.auth import get_current_user
+from services.discounts import compute_discount, allocate
 
 router = APIRouter(prefix="/api/payments", tags=["GCash Payments"])
 ProductType = Literal["fuel", "oil", "multi"]
@@ -29,6 +30,8 @@ class GCashDialogRequest(BaseModel):
     attendant_name: str
     fuel_items: Optional[List[MultiFuelItem]] = []
     oil_items: Optional[List[MultiOilItem]] = []
+    discount_type: Optional[str] = None      # "percent" | "fixed"
+    discount_value: float = 0.0
 
 def get_fifo_batches(session: Session, fuel_id: int):
     return session.exec(select(FuelBatch).where(FuelBatch.fuel_id == fuel_id, FuelBatch.liters_remaining > 0).order_by(FuelBatch.restocked_at.asc(), FuelBatch.id.asc())).all()
@@ -135,6 +138,18 @@ def create_dialog_checkout(
             pending_oil_sales.append(os_item)
 
         total_amount = round(total_amount, 2)
+
+        # Order-level discount: spread over the item rows (adds back up exactly), and the PayMongo
+        # checkout below is created for the discounted amount.
+        discount_total = compute_discount(total_amount, data.discount_type, data.discount_value)
+        if discount_total:
+            all_rows = pending_sales + pending_oil_sales
+            shares = allocate(discount_total, [r.total_amount for r in all_rows])
+            for r, share in zip(all_rows, shares):
+                r.discount_amount = share
+                r.total_amount = round(r.total_amount - share, 2)
+            total_amount = round(total_amount - discount_total, 2)
+
         session.flush()
 
         item_cnt = len(pending_sales) + len(pending_oil_sales)
@@ -174,6 +189,7 @@ def create_dialog_checkout(
             "checkout_id": checkout['checkout_id'],
             "checkout_url": checkout['checkout_url'],
             "total_amount": total_amount,
+            "discount_amount": discount_total,
             "status": "pending"
         }
 
@@ -204,6 +220,9 @@ def create_dialog_checkout(
             total_amount += take * b.selling_price
             liters_needed -= take
         total_amount = round(total_amount, 2)
+        gross_unit_price = round(total_amount / data.liters_sold, 2)   # price per liter before the discount
+        discount_amount = compute_discount(total_amount, data.discount_type, data.discount_value)
+        total_amount = round(total_amount - discount_amount, 2)
         description = f"{fuel.name} {data.liters_sold}L"
 
         sale = Sale(
@@ -212,8 +231,9 @@ def create_dialog_checkout(
             attendant_name=data.attendant_name,
             recorded_by=current_user.id,
             liters_sold=data.liters_sold,
-            price_per_liter=round(total_amount / data.liters_sold, 2),
+            price_per_liter=gross_unit_price,
             total_amount=total_amount,
+            discount_amount=discount_amount,
             amount_paid=0,
             change_given=0,
             receipt_no="PENDING",
@@ -231,6 +251,8 @@ def create_dialog_checkout(
         if oil.stock < data.quantity:
             raise HTTPException(400, f"Not enough oil stock. Only {oil.stock} pcs")
         total_amount = round(oil.price * data.quantity, 2)
+        discount_amount = compute_discount(total_amount, data.discount_type, data.discount_value)
+        total_amount = round(total_amount - discount_amount, 2)
         description = f"{oil.brand} {oil.name} x{data.quantity}"
 
         oil_sale = OilSale(
@@ -238,6 +260,7 @@ def create_dialog_checkout(
             quantity=data.quantity,
             price_per_unit=oil.price,
             total_amount=total_amount,
+            discount_amount=discount_amount,
             amount_paid=0,
             change_given=0,
             receipt_no="PENDING",
@@ -286,6 +309,7 @@ def create_dialog_checkout(
         "checkout_id": checkout['checkout_id'],
         "checkout_url": checkout['checkout_url'],
         "total_amount": total_amount,
+        "discount_amount": discount_amount,
         "status": "pending"
     }
 

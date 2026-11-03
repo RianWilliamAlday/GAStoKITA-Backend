@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
+from backend.routers import employees, fuels, inventory, auth, receipt, sales, analytics, expenses, oils, gcash
 from db.database import create_db_and_tables
 from pathlib import Path
 
@@ -16,7 +16,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Backend",
     description="API for gas station app",
-    version="1.8.5",
+    version="2.0.4",
     lifespan=lifespan
 )
 

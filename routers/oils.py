@@ -26,13 +26,13 @@ class OilCreate(BaseModel):
     variant: Optional[str] = None
     stock: int = 0
     price: float
-    cost: float = 0
+    cost: float = 0  # base cost per unit
     low_stock_threshold: int = 5
     image_url: Optional[str] = None
 
 class OilRestockRequest(BaseModel):
     quantity_added: int
-    total_cost: float
+    unit_cost: float  # BASE COST PER UNIT (the system computes the total)
     supplier: Optional[str] = None
 
 @router.post("/", response_model=OilProduct)
@@ -86,30 +86,48 @@ def update_oil(oil_id: int, data: OilCreate, session: Session = Depends(get_sess
     return oil
 
 @router.post("/{oil_id}/restock")
-def restock_oil(oil_id: int, data: OilRestockRequest, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+def restock_oil(
+    oil_id: int, 
+    data: OilRestockRequest, 
+    session: Session = Depends(get_session), 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    `unit_cost` is the base cost PER UNIT. The system computes the batch total:
+    total_batch_cost = quantity_added * unit_cost.
+    The log stores the total (used by expenses); the product's `cost` becomes
+    the weighted-average cost per unit.
+    """
     oil = session.get(OilProduct, oil_id)
     if not oil:
         raise HTTPException(404, "Oil product not found")
     if data.quantity_added <= 0:
         raise HTTPException(400, "Quantity must be positive")
+    if data.unit_cost < 0:
+        raise HTTPException(400, "Unit cost cannot be negative")
+
+    total_batch_cost = round(data.quantity_added * data.unit_cost, 2)
 
     current_total_value = oil.stock * oil.cost
-    new_total_value = current_total_value + data.total_cost
+    new_total_value = current_total_value + total_batch_cost
     new_total_stock = oil.stock + data.quantity_added
 
     if new_total_stock > 0:
-        oil.cost = round(new_total_value / new_total_stock, 2)
+        oil.cost = round(new_total_value / new_total_stock, 2)  # Weighted-average cost per unit
 
     oil.stock = new_total_stock
     oil.updated_at = datetime.now()
 
+    # Expense log records TOTAL expenditure
     log = OilRestockLog(
         oil_product_id=oil.id,
         quantity_added=data.quantity_added,
-        total_cost=data.total_cost,
+        total_cost=total_batch_cost,
         supplier=data.supplier,
-        restocked_by=current_user.id
+        restocked_by=current_user.id,
+        restocked_at=datetime.now()
     )
+    
     session.add(oil)
     session.add(log)
     session.commit()
@@ -118,7 +136,10 @@ def restock_oil(oil_id: int, data: OilRestockRequest, session: Session = Depends
     return {
         "message": f"Restocked {data.quantity_added} pcs of {oil.brand} {oil.name}",
         "new_stock": oil.stock,
-        "weighted_avg_cost": oil.cost,
+        "unit_cost": data.unit_cost,
+        "total_cost": total_batch_cost,
+        "base_cost_per_unit": oil.cost,
+        "selling_price": oil.price,  # Remains unchanged
         "needs_restock": oil.stock <= oil.low_stock_threshold
     }
 

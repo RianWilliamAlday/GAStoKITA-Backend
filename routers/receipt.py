@@ -19,6 +19,8 @@ def build_pdf_bytes(
     oil_name: str = "Oil",
     single_qty: float = 0.0,
     single_price: float = 0.0,
+    discount: float = 0.0,
+    gcash_amount: float = 0.0,
 ):
     buf = io.BytesIO()
     item_count = len(items) if items else 1
@@ -57,9 +59,21 @@ def build_pdf_bytes(
         c.drawString(5 * mm, y, line1)
         y -= 5 * mm
 
+    if discount > 0:
+        c.drawString(5 * mm, y, f"Subtotal: P{total_amount + discount:.2f}")
+        y -= 5 * mm
+        c.drawString(5 * mm, y, f"Discount: -P{discount:.2f}")
+        y -= 5 * mm
+
     c.drawString(5 * mm, y, f"Due:  P{total_amount:.2f}")
     y -= 5 * mm
-    c.drawString(5 * mm, y, f"Paid: P{amount_paid:.2f}")
+    if gcash_amount > 0:
+        # split payment: amount_paid is everything received (GCash part + cash handed over)
+        c.drawString(5 * mm, y, f"GCash: P{gcash_amount:.2f}")
+        y -= 5 * mm
+        c.drawString(5 * mm, y, f"Cash:  P{max(amount_paid - gcash_amount, 0):.2f}")
+    else:
+        c.drawString(5 * mm, y, f"Paid: P{amount_paid:.2f}")
     y -= 8 * mm
 
     c.setFont("Helvetica-Bold", 14)
@@ -122,6 +136,8 @@ def get_receipt_pdf(
         total_due = 0.0
         amount_paid = 0.0
         change_given = 0.0
+        discount_total = 0.0
+        gcash_total = 0.0
 
         for s_obj, f_name, p_name in fuel_sales:
             clean_fuel = (
@@ -137,6 +153,8 @@ def get_receipt_pdf(
             items.append(f"{clean_fuel} {liters:.3f}L x P{price:.2f}")
 
             total_due += s_obj.total_amount
+            discount_total += float(getattr(s_obj, "discount_amount", 0) or 0)
+            gcash_total += float(getattr(s_obj, "gcash_amount", 0) or 0)
             amount_paid = max(amount_paid, s_obj.amount_paid)
             change_given = max(change_given, s_obj.change_given)
 
@@ -152,6 +170,8 @@ def get_receipt_pdf(
             items.append(f"{p_label} {qty} x P{price:.2f}")
 
             total_due += o_obj.total_amount
+            discount_total += float(getattr(o_obj, "discount_amount", 0) or 0)
+            gcash_total += float(getattr(o_obj, "gcash_amount", 0) or 0)
             amount_paid = max(amount_paid, o_obj.amount_paid)
             change_given = max(change_given, o_obj.change_given)
 
@@ -161,6 +181,8 @@ def get_receipt_pdf(
             change_given=change_given,
             sale_type="multi",
             items=items,
+            discount=round(discount_total, 2),
+            gcash_amount=round(gcash_total, 2),
         )
 
     elif sale_type == "fuel":
@@ -188,6 +210,8 @@ def get_receipt_pdf(
             pump_name=pump_name,
             single_qty=float(sale_obj.liters_sold),
             single_price=float(sale_obj.price_per_liter),
+            discount=float(getattr(sale_obj, "discount_amount", 0) or 0),
+            gcash_amount=float(getattr(sale_obj, "gcash_amount", 0) or 0),
         )
 
     else:
@@ -216,6 +240,8 @@ def get_receipt_pdf(
             oil_name=product_name,
             single_qty=float(sale_obj.quantity),
             single_price=float(sale_obj.price_per_unit),
+            discount=float(getattr(sale_obj, "discount_amount", 0) or 0),
+            gcash_amount=float(getattr(sale_obj, "gcash_amount", 0) or 0),
         )
 
     return StreamingResponse(

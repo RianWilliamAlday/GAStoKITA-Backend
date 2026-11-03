@@ -9,6 +9,7 @@ from models.schemas import (
     MultiFuelItem, MultiOilItem
 )
 from services.auth import get_current_user
+from services.discounts import compute_discount, allocate
 from datetime import datetime, date, time
 from typing import List, Optional
 
@@ -110,6 +111,9 @@ def create_fuel_sale(
 
     weighted_avg_price = total_amount / data.liters_sold if data.liters_sold > 0 else 0
     total_amount = round(total_amount, 2)
+    # order-level discount: from here on total_amount is what the customer actually pays
+    discount_amount = compute_discount(total_amount, getattr(data, "discount_type", None), getattr(data, "discount_value", 0))
+    total_amount = round(total_amount - discount_amount, 2)
     is_gcash = data.payment_method.lower() == "gcash"
 
     if is_gcash:
@@ -126,7 +130,8 @@ def create_fuel_sale(
             receipt_no="PENDING",
             payment_method="gcash",
             payment_status="pending",
-            paymongo_checkout_id=None
+            paymongo_checkout_id=None,
+            discount_amount=discount_amount
         )
     
         try:
@@ -194,7 +199,8 @@ def create_fuel_sale(
         receipt_no="TMP",
         payment_method="split" if gcash_part else "cash",
         payment_status="paid",
-        gcash_amount=gcash_part
+        gcash_amount=gcash_part,
+        discount_amount=discount_amount
     )
     session.add(sale)
     session.flush()
@@ -242,7 +248,8 @@ def create_fuel_sale(
         payment_method=sale.payment_method,
         sold_at=sale.sold_at,
         fifo_breakdown=fifo_details,
-        is_split_price=len(fifo_details) > 1
+        is_split_price=len(fifo_details) > 1,
+        discount_amount=discount_amount
     )
 
 @router.post("/oil", response_model=OilSaleResponse)
@@ -261,6 +268,9 @@ def create_oil_sale(
 
     attendant = data.attendant_name or current_user.name
     total = round(data.quantity * oil.price, 2)
+    # order-level discount: from here on total is what the customer actually pays
+    discount_amount = compute_discount(total, getattr(data, "discount_type", None), getattr(data, "discount_value", 0))
+    total = round(total - discount_amount, 2)
     is_gcash = data.payment_method.lower() == "gcash"
 
     if is_gcash:
@@ -276,7 +286,8 @@ def create_oil_sale(
             payment_status="pending",
             paymongo_checkout_id=None,
             attendant_name=attendant,
-            sold_by=current_user.id
+            sold_by=current_user.id,
+            discount_amount=discount_amount
         )
         session.add(sale)
         session.flush()
@@ -341,7 +352,8 @@ def create_oil_sale(
         payment_status="paid",
         gcash_amount=gcash_part,
         attendant_name=attendant,
-        sold_by=current_user.id
+        sold_by=current_user.id,
+        discount_amount=discount_amount
     )
     session.add(sale)
     session.flush()
@@ -365,7 +377,8 @@ def create_oil_sale(
         attendant_name=sale.attendant_name,
         sold_at=sale.sold_at,
         recorded_by=current_user.name,
-        remaining_stock=oil.stock
+        remaining_stock=oil.stock,
+        discount_amount=discount_amount
     )
 
 @router.post("/multi", response_model=MultiSaleResponse)
@@ -452,6 +465,16 @@ def create_multi_sale(
         })
 
     grand_total = round(total_fuel_amount + total_oil_amount, 2)
+
+    # Order-level discount. grand_total becomes what the customer pays; the discount is also
+    # spread over the item rows (adds back up exactly) so reports that sum the rows stay correct.
+    subtotal = grand_total
+    discount_total = compute_discount(subtotal, getattr(data, "discount_type", None), getattr(data, "discount_value", 0))
+    grand_total = round(subtotal - discount_total, 2)
+    row_gross = [p["item_total"] for p in fuel_preparations] + [p["item_total"] for p in oil_preparations]
+    discount_shares = allocate(discount_total, row_gross)
+    row_net = [round(g - d, 2) for g, d in zip(row_gross, discount_shares)]
+
     is_gcash = data.payment_method.lower() == "gcash"
 
     gcash_total = split_gcash_part(data, grand_total)
@@ -462,7 +485,7 @@ def create_multi_sale(
     n_rows = len(fuel_preparations) + len(oil_preparations)
     gcash_shares = [0.0] * n_rows
     if gcash_total and n_rows:
-        row_totals = [p["item_total"] for p in fuel_preparations] + [p["item_total"] for p in oil_preparations]
+        row_totals = row_net
         assigned = 0.0
         for i, t in enumerate(row_totals):
             if i == n_rows - 1:
@@ -497,14 +520,15 @@ def create_multi_sale(
             recorded_by=current_user.id,
             liters_sold=prep["liters_sold"],
             price_per_liter=round(prep["weighted_avg_price"], 2),
-            total_amount=prep["item_total"],
+            total_amount=row_net[fi],
             amount_paid=paid_amount,
             change_given=change_given,
             receipt_no=trx_ref,
             transaction_ref=trx_ref,
             payment_method=stored_pm,
             payment_status="pending" if is_gcash else "paid",
-            gcash_amount=gcash_shares[fi]
+            gcash_amount=gcash_shares[fi],
+            discount_amount=discount_shares[fi]
         )
         session.add(sale)
         session.flush()
@@ -561,7 +585,7 @@ def create_multi_sale(
             oil_product_id=oil.id,
             quantity=prep["quantity"],
             price_per_unit=prep["price_per_unit"],
-            total_amount=prep["item_total"],
+            total_amount=row_net[len(fuel_preparations) + oi],
             amount_paid=paid_amount,
             change_given=change_given,
             receipt_no=trx_ref,
@@ -569,6 +593,7 @@ def create_multi_sale(
             payment_method=stored_pm,
             payment_status="pending" if is_gcash else "paid",
             gcash_amount=gcash_shares[len(fuel_preparations) + oi],
+            discount_amount=discount_shares[len(fuel_preparations) + oi],
             attendant_name=clean_name,
             sold_by=current_user.id
         )
@@ -617,6 +642,7 @@ def create_multi_sale(
         payment_method=stored_pm,
         payment_status="pending" if is_gcash else "paid",
         total_amount=grand_total,
+        discount_amount=discount_total,
         amount_paid=paid_amount,
         change_given=change_given,
         sold_at=trx_timestamp,

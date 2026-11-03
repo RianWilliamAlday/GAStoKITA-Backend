@@ -58,6 +58,7 @@ def list_expenses(
             supplier=None
         ))
 
+    # Fuel restock logs: `cost` already holds the TOTAL (cost per liter x liters, computed at restock time)
     fuel_stmt = (select(RestockLog, Fuel.name, User.name)
         .outerjoin(Fuel, RestockLog.fuel_id == Fuel.id)
         .outerjoin(User, RestockLog.restocked_by == cast(User.id, String)))
@@ -67,7 +68,6 @@ def list_expenses(
         fuel_stmt = fuel_stmt.where(RestockLog.restocked_at <= datetime.combine(end_date, time.max))
 
     for log, fuel_name, user_name in session.exec(fuel_stmt).all():
-        # Fallback order: user table name -> raw string in restocked_by -> default "Admin"
         display_recorder = user_name or (str(log.restocked_by) if log.restocked_by else "Admin")
 
         unified_list.append(UnifiedExpenseItem(
@@ -81,6 +81,7 @@ def list_expenses(
             supplier=log.supplier or "N/A"
         ))
 
+    # Oil restock logs: `total_cost` already holds the TOTAL (unit cost x quantity, computed at restock time)
     oil_stmt = (
         select(OilRestockLog, OilProduct.brand, OilProduct.name, User.name)
         .outerjoin(OilProduct, OilRestockLog.oil_product_id == OilProduct.id)
@@ -89,12 +90,12 @@ def list_expenses(
     if start_date:
         oil_stmt = oil_stmt.where(OilRestockLog.restocked_at >= datetime.combine(start_date, time.min))
     if end_date:
-        oil_stmt = oil_stmt.where(OilRestockLog.restocked_at >= datetime.combine(end_date, time.max))
+        oil_stmt = oil_stmt.where(OilRestockLog.restocked_at <= datetime.combine(end_date, time.max))
 
     for log, brand, product_name, user_name in session.exec(oil_stmt).all():
         oil_title = f"{brand} {product_name}".strip() if brand or product_name else "Oil Product"
 
-        is_initial = log.supplier == ""
+        is_initial = (log.supplier == "" or log.supplier == "Initial Inventory Creation")
         action_label = "Initial Stock" if is_initial else "Restocked"
         category_label = "Oil Initial Stock Purchase" if is_initial else "Oil Inventory Restock"
 
@@ -108,6 +109,7 @@ def list_expenses(
             recorded_by=user_name or "Admin",
             supplier=log.supplier or "N/A"
         ))
+
     unified_list.sort(key=lambda x: x.expense_date, reverse=True)
     return unified_list
 

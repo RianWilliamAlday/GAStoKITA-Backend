@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 GOOGLE_CLIENT_ID = os.getenv("CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "https://gastokita-backend.onrender.com/api/auth/google/callback")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
 # false = only emails already in the database can sign in with Google
 # true  = any verified Google account gets an EMPLOYEE account automatically (old behavior)
 ALLOW_GOOGLE_SIGNUP = os.getenv("ALLOW_GOOGLE_SIGNUP", "false").lower() == "true"
@@ -44,6 +44,11 @@ class TokenResponse(BaseModel):
     role: str
     name: str
     user: dict | None = None
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
 
 # ---------------------------------------------------------------------------
 # Google helpers
@@ -145,7 +150,11 @@ def _token_for_google_user(email: str, name: str, session: Session, role: str = 
     user = session.exec(select(User).where(User.email == email)).first()
     if not user:
         if not ALLOW_GOOGLE_SIGNUP:
-            raise HTTPException(403, "No account for this Google email. Ask an admin to create one.")
+            # Return email & name without raising an error so the UI can auto-fill sign up fields
+            raise HTTPException(
+                status_code=404, 
+                detail={"message": "NO_ACCOUNT", "email": email, "name": name}
+            )
         user = User(
             name=name,
             email=email,
@@ -341,6 +350,38 @@ def create_account(
     session.refresh(user)
     token = create_access_token({"sub": user.id, "role": user.role})
     return TokenResponse(access_token=token, role=user.role, name=user.name)
+
+@router.post("/register", response_model=TokenResponse)
+def register_user(data: RegisterRequest, session: Session = Depends(get_session)):
+    # Check if email is already taken
+    existing_user = session.exec(select(User).where(User.email == data.email)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email address is already registered.")
+
+    # Prevent creating duplicate Admin accounts if system rules allow only one admin
+    if data.role == UserRole.ADMIN:
+        existing_admin = session.exec(select(User).where(User.role == UserRole.ADMIN)).first()
+        if existing_admin:
+            raise HTTPException(status_code=400, detail="An admin account already exists in the system.")
+
+    new_user = User(
+        name=data.name,
+        email=data.email,
+        password_hash=hash_password(data.password),
+        role=data.role,  # Correctly sets ADMIN or EMPLOYEE
+        is_active=True
+    )
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
+
+    token = create_access_token({"sub": new_user.id, "role": new_user.role})
+    return TokenResponse(
+        access_token=token,
+        role=new_user.role,
+        name=new_user.name,
+        user={"id": new_user.id, "name": new_user.name, "email": new_user.email, "role": new_user.role}
+    )
 
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
